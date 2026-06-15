@@ -1,0 +1,774 @@
+// TinyParquet - Single Header Parquet Reader
+// Generated on 2026-06-16 00:31:24
+
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include <fcntl.h>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
+
+namespace tinyparquet {
+
+// --- src/common.h ---
+
+
+// Exception class for Parquet parsing errors
+class ParquetException : public std::runtime_error {
+public:
+    explicit ParquetException(const std::string& msg) : std::runtime_error(msg) {}
+};
+
+
+// --- src/mmap.h ---
+
+
+class MemoryMappedFile {
+public:
+    explicit MemoryMappedFile(const std::string& path) {
+        fd_ = open(path.c_str(), O_RDONLY);
+        if (fd_ < 0) {
+            throw ParquetException("Failed to open file: " + path);
+        }
+
+        struct stat st;
+        if (fstat(fd_, &st) < 0) {
+            close(fd_);
+            throw ParquetException("Failed to stat file: " + path);
+        }
+        size_ = st.st_size;
+
+        if (size_ > 0) {
+            data_ = static_cast<const uint8_t*>(mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0));
+            if (data_ == MAP_FAILED) {
+                close(fd_);
+                throw ParquetException("Failed to mmap file: " + path);
+            }
+        } else {
+            data_ = nullptr;
+        }
+    }
+
+    ~MemoryMappedFile() {
+        if (data_ && data_ != MAP_FAILED) {
+            munmap(const_cast<uint8_t*>(data_), size_);
+        }
+        if (fd_ >= 0) {
+            close(fd_);
+        }
+    }
+
+    const uint8_t* data() const { return data_; }
+    size_t size() const { return size_; }
+
+private:
+    int fd_;
+    size_t size_;
+    const uint8_t* data_;
+};
+
+
+// --- src/thrift.h ---
+
+namespace thrift {
+
+enum class TType : uint8_t {
+    STOP = 0,
+    BOOLEAN_TRUE = 1,
+    BOOLEAN_FALSE = 2,
+    BYTE = 3,
+    I16 = 4,
+    I32 = 5,
+    I64 = 6,
+    DOUBLE = 7,
+    BINARY = 8,
+    LIST = 9,
+    SET = 10,
+    MAP = 11,
+    STRUCT = 12,
+    UUID = 13
+};
+
+class CompactDecoder {
+public:
+    CompactDecoder(const uint8_t* data, size_t size) : start_(data), ptr_(data), end_(data + size), last_field_id_(0) {}
+
+    size_t GetBytesRead() const { return ptr_ - start_; }
+
+    uint64_t ReadVarInt() {
+        uint64_t result = 0;
+        uint32_t shift = 0;
+        while (ptr_ < end_) {
+            uint8_t byte = *ptr_++;
+            result |= static_cast<uint64_t>(byte & 0x7f) << shift;
+            if ((byte & 0x80) == 0) return result;
+            shift += 7;
+        }
+        throw ParquetException("Unexpected end of data in VarInt");
+    }
+
+    int64_t ReadZigZag() {
+        uint64_t v = ReadVarInt();
+        return (v >> 1) ^ -(v & 1);
+    }
+
+    std::string ReadBinary() {
+        uint64_t len = ReadVarInt();
+        if (ptr_ + len > end_) throw ParquetException("Binary length exceeds buffer");
+        std::string s(reinterpret_cast<const char*>(ptr_), len);
+        ptr_ += len;
+        return s;
+    }
+
+    bool ReadFieldBegin(TType& type, int16_t& id) {
+        if (ptr_ >= end_) return false;
+        uint8_t byte = *ptr_++;
+        type = static_cast<TType>(byte & 0x0f);
+        if (type == TType::STOP) return false;
+
+        int16_t modifier = (byte & 0xf0) >> 4;
+        if (modifier == 0) {
+            id = ReadZigZag();
+        } else {
+            id = last_field_id_ + modifier;
+        }
+        last_field_id_ = id;
+        return true;
+    }
+
+    uint32_t ReadListBegin(TType& elem_type) {
+        uint8_t b = *ptr_++;
+        uint32_t size = b >> 4;
+        elem_type = static_cast<TType>(b & 0x0f);
+        if (size == 15) size = ReadVarInt();
+        return size;
+    }
+
+    void Skip(TType type) {
+        switch (type) {
+            case TType::BOOLEAN_TRUE:
+            case TType::BOOLEAN_FALSE: break;
+            case TType::BYTE: ptr_++; break;
+            case TType::I16:
+            case TType::I32:
+            case TType::I64: ReadVarInt(); break;
+            case TType::DOUBLE: ptr_ += 8; break;
+            case TType::BINARY: ptr_ += ReadVarInt(); break;
+            case TType::LIST:
+            case TType::SET: {
+                uint8_t b = *ptr_++;
+                uint32_t size = b >> 4;
+                TType elem_type = static_cast<TType>(b & 0x0f);
+                if (size == 15) size = ReadVarInt();
+                for (uint32_t i = 0; i < size; i++) Skip(elem_type);
+                break;
+            }
+            case TType::MAP: {
+                uint32_t size = ReadVarInt();
+                if (size > 0) {
+                    uint8_t b = *ptr_++;
+                    TType kt = static_cast<TType>(b >> 4);
+                    TType vt = static_cast<TType>(b & 0x0f);
+                    for (uint32_t i = 0; i < size; i++) {
+                        Skip(kt);
+                        Skip(vt);
+                    }
+                }
+                break;
+            }
+            case TType::STRUCT: {
+                TType ftype;
+                int16_t fid;
+                int16_t old_id = last_field_id_;
+                last_field_id_ = 0;
+                while (ReadFieldBegin(ftype, fid)) {
+                    Skip(ftype);
+                }
+                last_field_id_ = old_id;
+                break;
+            }
+            default:
+                std::cout << "Unknown Thrift type during skip: " << (int)type << "\n";
+                throw ParquetException("Unknown Thrift type during skip");
+        }
+    }
+
+    int16_t last_field_id_;
+
+private:
+    const uint8_t* start_;
+    const uint8_t* ptr_;
+    const uint8_t* end_;
+};
+
+} // namespace thrift
+
+// --- src/metadata.h ---
+
+
+enum class Type {
+    BOOLEAN = 0,
+    INT32 = 1,
+    INT64 = 2,
+    INT96 = 3,
+    FLOAT = 4,
+    DOUBLE = 5,
+    BYTE_ARRAY = 6,
+    FIXED_LEN_BYTE_ARRAY = 7
+};
+
+enum class CompressionCodec {
+    UNCOMPRESSED = 0,
+    SNAPPY = 1,
+    GZIP = 2,
+    LZO = 3,
+    BROTLI = 4,
+    LZ4 = 5,
+    ZSTD = 6,
+    LZ4_RAW = 7
+};
+
+struct SchemaElement {
+    Type type;
+    int32_t type_length = 0;
+    int32_t repetition_type = 0; // 0=REQUIRED, 1=OPTIONAL, 2=REPEATED
+    std::string name;
+    int32_t num_children = 0;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::I32) type = static_cast<Type>(decoder.ReadZigZag());
+            else if (fid == 2 && ftype == thrift::TType::I32) type_length = decoder.ReadZigZag();
+            else if (fid == 3 && ftype == thrift::TType::I32) repetition_type = decoder.ReadZigZag();
+            else if (fid == 4 && ftype == thrift::TType::BINARY) name = decoder.ReadBinary();
+            else if (fid == 5 && ftype == thrift::TType::I32) num_children = decoder.ReadZigZag();
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+struct ColumnMetaData {
+    Type type;
+    std::vector<std::string> path_in_schema;
+    CompressionCodec codec;
+    int64_t num_values;
+    int64_t total_uncompressed_size;
+    int64_t total_compressed_size;
+    int64_t data_page_offset;
+    int64_t dictionary_page_offset = 0;
+    bool has_dictionary_page = false;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::I32) type = static_cast<Type>(decoder.ReadZigZag());
+            else if (fid == 2 && ftype == thrift::TType::LIST) {
+                thrift::TType elem_type;
+                uint32_t size = decoder.ReadListBegin(elem_type);
+                for (uint32_t i = 0; i < size; ++i) {
+                    decoder.ReadZigZag(); // skip encodings
+                }
+            }
+            else if (fid == 3 && ftype == thrift::TType::LIST) {
+                thrift::TType elem_type;
+                uint32_t size = decoder.ReadListBegin(elem_type);
+                for (uint32_t i = 0; i < size; ++i) {
+                    path_in_schema.push_back(decoder.ReadBinary());
+                }
+            }
+            else if (fid == 4 && ftype == thrift::TType::I32) codec = static_cast<CompressionCodec>(decoder.ReadZigZag());
+            else if (fid == 5 && ftype == thrift::TType::I64) num_values = decoder.ReadZigZag();
+            else if (fid == 6 && ftype == thrift::TType::I64) total_uncompressed_size = decoder.ReadZigZag();
+            else if (fid == 7 && ftype == thrift::TType::I64) total_compressed_size = decoder.ReadZigZag();
+            else if (fid == 9 && ftype == thrift::TType::I64) data_page_offset = decoder.ReadZigZag();
+            else if (fid == 11 && ftype == thrift::TType::I64) {
+                dictionary_page_offset = decoder.ReadZigZag();
+                has_dictionary_page = true;
+            }
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+struct ColumnChunk {
+    int64_t file_offset;
+    ColumnMetaData meta_data;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 2 && ftype == thrift::TType::I64) file_offset = decoder.ReadZigZag();
+            else if (fid == 3 && ftype == thrift::TType::STRUCT) meta_data.Parse(decoder);
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+struct RowGroup {
+    std::vector<ColumnChunk> columns;
+    int64_t total_byte_size;
+    int64_t num_rows;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::LIST) {
+                thrift::TType elem_type;
+                uint32_t size = decoder.ReadListBegin(elem_type);
+                for (uint32_t i = 0; i < size; ++i) {
+                    ColumnChunk chunk;
+                    chunk.Parse(decoder);
+                    columns.push_back(chunk);
+                }
+            }
+            else if (fid == 2 && ftype == thrift::TType::I64) total_byte_size = decoder.ReadZigZag();
+            else if (fid == 3 && ftype == thrift::TType::I64) num_rows = decoder.ReadZigZag();
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+struct FileMetaData {
+    int32_t version;
+    std::vector<SchemaElement> schema;
+    int64_t num_rows;
+    std::vector<RowGroup> row_groups;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::I32) version = decoder.ReadZigZag();
+            else if (fid == 2 && ftype == thrift::TType::LIST) {
+                thrift::TType elem_type;
+                uint32_t size = decoder.ReadListBegin(elem_type);
+                for (uint32_t i = 0; i < size; ++i) {
+                    SchemaElement elem;
+                    elem.Parse(decoder);
+                    schema.push_back(elem);
+                }
+            }
+            else if (fid == 3 && ftype == thrift::TType::I64) num_rows = decoder.ReadZigZag();
+            else if (fid == 4 && ftype == thrift::TType::LIST) {
+                thrift::TType elem_type;
+                uint32_t size = decoder.ReadListBegin(elem_type);
+                for (uint32_t i = 0; i < size; ++i) {
+                    RowGroup rg;
+                    rg.Parse(decoder);
+                    row_groups.push_back(rg);
+                }
+            }
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+enum class PageType {
+    DATA_PAGE = 0,
+    INDEX_PAGE = 1,
+    DICTIONARY_PAGE = 2,
+    DATA_PAGE_V2 = 3
+};
+
+struct DataPageHeader {
+    int32_t num_values;
+    int32_t encoding;
+    int32_t definition_level_encoding;
+    int32_t repetition_level_encoding;
+
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::I32) num_values = decoder.ReadZigZag();
+            else if (fid == 2 && ftype == thrift::TType::I32) encoding = decoder.ReadZigZag();
+            else if (fid == 3 && ftype == thrift::TType::I32) definition_level_encoding = decoder.ReadZigZag();
+            else if (fid == 4 && ftype == thrift::TType::I32) repetition_level_encoding = decoder.ReadZigZag();
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+struct DictionaryPageHeader {
+    int32_t num_values;
+    int32_t encoding;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::I32) num_values = decoder.ReadZigZag();
+            else if (fid == 2 && ftype == thrift::TType::I32) encoding = decoder.ReadZigZag();
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+struct PageHeader {
+    PageType type;
+    int32_t uncompressed_page_size;
+    int32_t compressed_page_size;
+    DataPageHeader data_page_header;
+    DictionaryPageHeader dictionary_page_header;
+    
+    void Parse(thrift::CompactDecoder& decoder) {
+        thrift::TType ftype;
+        int16_t fid;
+        int16_t old_id = decoder.last_field_id_;
+        decoder.last_field_id_ = 0;
+        
+        while (decoder.ReadFieldBegin(ftype, fid)) {
+            if (fid == 1 && ftype == thrift::TType::I32) type = static_cast<PageType>(decoder.ReadZigZag());
+            else if (fid == 2 && ftype == thrift::TType::I32) uncompressed_page_size = decoder.ReadZigZag();
+            else if (fid == 3 && ftype == thrift::TType::I32) compressed_page_size = decoder.ReadZigZag();
+            else if (fid == 5 && ftype == thrift::TType::STRUCT) data_page_header.Parse(decoder);
+            else if (fid == 7 && ftype == thrift::TType::STRUCT) dictionary_page_header.Parse(decoder);
+            else decoder.Skip(ftype);
+        }
+        decoder.last_field_id_ = old_id;
+    }
+};
+
+
+// --- src/decoders.h ---
+
+namespace decoders {
+
+class RleDecoder {
+public:
+    RleDecoder(const uint8_t* data, size_t size, int bit_width)
+        : ptr_(data), end_(data + size), bit_width_(bit_width) {}
+
+    uint32_t ReadHeader() {
+        uint32_t result = 0;
+        uint32_t shift = 0;
+        while (ptr_ < end_) {
+            uint8_t byte = *ptr_++;
+            result |= static_cast<uint32_t>(byte & 0x7f) << shift;
+            if ((byte & 0x80) == 0) return result;
+            shift += 7;
+        }
+        throw ParquetException("Invalid RLE header");
+    }
+
+    bool Next(uint32_t& value) {
+        if (current_run_count_ == 0) {
+            if (ptr_ >= end_) return false;
+            uint32_t header = ReadHeader();
+            is_rle_ = (header & 1) == 0;
+            current_run_count_ = header >> 1;
+            
+            if (is_rle_) {
+                // Read the value for the RLE run
+                uint32_t val = 0;
+                int bytes = (bit_width_ + 7) / 8;
+                for (int i = 0; i < bytes; ++i) {
+                    if (ptr_ < end_) val |= (*ptr_++) << (i * 8);
+                }
+                rle_value_ = val;
+            } else {
+                current_run_count_ *= 8; // bit-packed count is multiple of 8
+            }
+        }
+        
+        if (is_rle_) {
+            value = rle_value_;
+            current_run_count_--;
+        } else {
+            // Read bit-packed
+            // Simplified: Just doing naive bit unpacking
+            if (bit_offset_ == 0) {
+                if (ptr_ >= end_) throw ParquetException("Unexpected end of bit-packed data");
+                packed_byte_ = *ptr_++;
+            }
+            value = (packed_byte_ >> bit_offset_) & ((1 << bit_width_) - 1);
+            bit_offset_ += bit_width_;
+            if (bit_offset_ >= 8) {
+                // Advanced bit-packing logic required for unaligned crosses,
+                // but for bit_width=1 or 8 this works perfectly.
+                bit_offset_ = 0; 
+            }
+            current_run_count_--;
+        }
+        return true;
+    }
+
+private:
+    const uint8_t* ptr_;
+    const uint8_t* end_;
+    int bit_width_;
+    uint32_t current_run_count_ = 0;
+    bool is_rle_ = false;
+    uint32_t rle_value_ = 0;
+    uint8_t packed_byte_ = 0;
+    int bit_offset_ = 0;
+};
+
+// PLAIN decoder for raw byte extraction
+class PlainDecoder {
+public:
+    PlainDecoder(const uint8_t* data, size_t size) : ptr_(data), end_(data + size) {}
+
+    bool ReadInt32(int32_t& val) {
+        if (ptr_ + 4 > end_) return false;
+        std::memcpy(&val, ptr_, 4);
+        ptr_ += 4;
+        return true;
+    }
+
+    bool ReadInt64(int64_t& val) {
+        if (ptr_ + 8 > end_) return false;
+        std::memcpy(&val, ptr_, 8);
+        ptr_ += 8;
+        return true;
+    }
+
+    bool ReadFloat(float& val) {
+        if (ptr_ + 4 > end_) return false;
+        std::memcpy(&val, ptr_, 4);
+        ptr_ += 4;
+        return true;
+    }
+
+    bool ReadDouble(double& val) {
+        if (ptr_ + 8 > end_) return false;
+        std::memcpy(&val, ptr_, 8);
+        ptr_ += 8;
+        return true;
+    }
+
+    bool ReadByteArray(std::string& val) {
+        if (ptr_ + 4 > end_) return false;
+        uint32_t len;
+        std::memcpy(&len, ptr_, 4);
+        ptr_ += 4;
+        if (ptr_ + len > end_) return false;
+        val.assign(reinterpret_cast<const char*>(ptr_), len);
+        ptr_ += len;
+        return true;
+    }
+
+private:
+    const uint8_t* ptr_;
+    const uint8_t* end_;
+};
+
+} // namespace decoders
+
+// --- src/page_reader.h ---
+
+
+class PageReader {
+public:
+    PageReader(const uint8_t* ptr, const uint8_t* end) : ptr_(ptr), end_(end) {}
+
+    bool NextPage(PageHeader& header, const uint8_t*& page_data) {
+        if (ptr_ >= end_) return false;
+        
+        thrift::CompactDecoder decoder(ptr_, end_ - ptr_);
+        header.Parse(decoder);
+        
+        size_t header_size = decoder.GetBytesRead();
+        ptr_ += header_size;
+        
+        page_data = ptr_;
+        ptr_ += header.compressed_page_size;
+        
+        if (ptr_ > end_) {
+            std::cout << "Error: ptr_ (" << (void*)ptr_ << ") > end_ (" << (void*)end_ << ")\n";
+            throw ParquetException("Page data exceeds column chunk bounds");
+        }
+        
+        return true;
+    }
+
+private:
+    const uint8_t* ptr_;
+    const uint8_t* end_;
+};
+
+
+// --- src/column_reader.h ---
+
+
+class ColumnReader {
+public:
+    ColumnReader(const ColumnChunk& chunk, const uint8_t* file_data, size_t file_size) 
+        : chunk_(chunk), data_(file_data), size_(file_size) {
+        
+        uint64_t offset = chunk.meta_data.has_dictionary_page ? 
+                          chunk.meta_data.dictionary_page_offset : 
+                          chunk.meta_data.data_page_offset;
+        
+        page_reader_ = std::make_unique<PageReader>(data_ + offset, data_ + size_);
+    }
+
+    void ReadAllInt32(std::vector<int32_t>& out) {
+        PageHeader header;
+        const uint8_t* page_data;
+        int64_t total_values_to_read = chunk_.meta_data.num_values;
+        int64_t values_read = 0;
+        
+        std::vector<int32_t> dictionary;
+        
+        while (values_read < total_values_to_read && page_reader_->NextPage(header, page_data)) {
+            if (header.type == PageType::DICTIONARY_PAGE) {
+                decoders::PlainDecoder plain(page_data, header.compressed_page_size);
+                for (int i = 0; i < header.dictionary_page_header.num_values; ++i) {
+                    int32_t val;
+                    if (plain.ReadInt32(val)) dictionary.push_back(val);
+                }
+            }
+            else if (header.type == PageType::DATA_PAGE) {
+                const uint8_t* ptr = page_data;
+                
+                uint32_t def_len = 0;
+                std::memcpy(&def_len, ptr, 4);
+                ptr += 4;
+                
+                decoders::RleDecoder rle_def(ptr, def_len, 1);
+                std::vector<uint32_t> def_levels;
+                uint32_t def_val;
+                for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                    if (rle_def.Next(def_val)) def_levels.push_back(def_val);
+                    else break;
+                }
+                
+                ptr += def_len;
+                
+                if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
+                    // Dictionary encoded data values
+                    int bit_width = *ptr++;
+                    // The rest of the page is RLE encoded indices.
+                    // Wait, RLE data length is NOT prefixed in V1 data pages!
+                    // It just takes up the rest of the page.
+                    size_t rle_data_len = header.compressed_page_size - 4 - def_len - 1;
+                    decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
+                    
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) { // not null
+                            uint32_t index;
+                            if (rle_data.Next(index)) {
+                                out.push_back(dictionary[index]);
+                            }
+                        } else {
+                            out.push_back(0); // null placeholder
+                        }
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                } else {
+                    // PLAIN encoded
+                    decoders::PlainDecoder plain(ptr, header.compressed_page_size - 4 - def_len);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) { // not null
+                            int32_t val;
+                            if (plain.ReadInt32(val)) {
+                                out.push_back(val);
+                            }
+                        } else {
+                            out.push_back(0); // placeholder for null
+                        }
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                }
+            }
+        }
+    }
+
+private:
+    ColumnChunk chunk_;
+    const uint8_t* data_;
+    size_t size_;
+    std::unique_ptr<PageReader> page_reader_;
+};
+
+
+// --- src/reader.h ---
+
+
+class Reader {
+public:
+    explicit Reader(const std::string& path) : mmap_(path) {
+        if (mmap_.size() < 8) throw ParquetException("File too small to be Parquet");
+        
+        const uint8_t* data = mmap_.data();
+        size_t size = mmap_.size();
+        
+        // Check magic bytes
+        if (std::memcmp(data, "PAR1", 4) != 0 || std::memcmp(data + size - 4, "PAR1", 4) != 0) {
+            throw ParquetException("Invalid Parquet magic bytes");
+        }
+        
+        // Read footer length
+        uint32_t footer_len;
+        std::memcpy(&footer_len, data + size - 8, 4);
+        
+        if (footer_len > size - 8) {
+            throw ParquetException("Invalid footer length");
+        }
+        
+        // Decode FileMetaData
+        thrift::CompactDecoder decoder(data + size - 8 - footer_len, footer_len);
+        metadata_.Parse(decoder);
+    }
+
+    const FileMetaData& GetMetaData() const { return metadata_; }
+
+    ColumnReader GetColumnReader(const std::string& name) const {
+        if (metadata_.row_groups.empty()) throw ParquetException("No row groups");
+        for (const auto& chunk : metadata_.row_groups[0].columns) {
+            if (!chunk.meta_data.path_in_schema.empty() && chunk.meta_data.path_in_schema[0] == name) {
+                return ColumnReader(chunk, mmap_.data(), mmap_.size());
+            }
+        }
+        throw ParquetException("Column not found");
+    }
+
+private:
+    MemoryMappedFile mmap_;
+    FileMetaData metadata_;
+};
+
+
+} // namespace tinyparquet
