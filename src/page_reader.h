@@ -18,6 +18,10 @@ public:
         size_t header_size = decoder.GetBytesRead();
         ptr_ += header_size;
         
+        if (header.compressed_page_size < 0) {
+            return false;
+        }
+        
         page_data = ptr_;
         ptr_ += header.compressed_page_size;
         

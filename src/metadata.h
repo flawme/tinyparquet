@@ -194,10 +194,10 @@ enum class PageType {
 };
 
 struct DataPageHeader {
-    int32_t num_values;
-    int32_t encoding;
-    int32_t definition_level_encoding;
-    int32_t repetition_level_encoding;
+    int32_t num_values = 0;
+    int32_t encoding = 0;
+    int32_t definition_level_encoding = 0;
+    int32_t repetition_level_encoding = 0;
 
     void Parse(thrift::CompactDecoder& decoder) {
         thrift::TType ftype;
@@ -217,8 +217,8 @@ struct DataPageHeader {
 };
 
 struct DictionaryPageHeader {
-    int32_t num_values;
-    int32_t encoding;
+    int32_t num_values = 0;
+    int32_t encoding = 0;
     
     void Parse(thrift::CompactDecoder& decoder) {
         thrift::TType ftype;
@@ -236,9 +236,9 @@ struct DictionaryPageHeader {
 };
 
 struct PageHeader {
-    PageType type;
-    int32_t uncompressed_page_size;
-    int32_t compressed_page_size;
+    PageType type = PageType::DATA_PAGE;
+    int32_t uncompressed_page_size = 0;
+    int32_t compressed_page_size = 0;
     DataPageHeader data_page_header;
     DictionaryPageHeader dictionary_page_header;
     

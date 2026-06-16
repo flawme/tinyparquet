@@ -1,8 +1,9 @@
 // TinyParquet - Single Header Parquet Reader
-// Generated on 2026-06-16 20:13:27
+// Generated on 2026-06-16 20:34:32
 
 #pragma once
 
+#include <brotli/decode.h>
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
@@ -403,10 +404,10 @@ enum class PageType {
 };
 
 struct DataPageHeader {
-    int32_t num_values;
-    int32_t encoding;
-    int32_t definition_level_encoding;
-    int32_t repetition_level_encoding;
+    int32_t num_values = 0;
+    int32_t encoding = 0;
+    int32_t definition_level_encoding = 0;
+    int32_t repetition_level_encoding = 0;
 
     void Parse(thrift::CompactDecoder& decoder) {
         thrift::TType ftype;
@@ -426,8 +427,8 @@ struct DataPageHeader {
 };
 
 struct DictionaryPageHeader {
-    int32_t num_values;
-    int32_t encoding;
+    int32_t num_values = 0;
+    int32_t encoding = 0;
     
     void Parse(thrift::CompactDecoder& decoder) {
         thrift::TType ftype;
@@ -445,9 +446,9 @@ struct DictionaryPageHeader {
 };
 
 struct PageHeader {
-    PageType type;
-    int32_t uncompressed_page_size;
-    int32_t compressed_page_size;
+    PageType type = PageType::DATA_PAGE;
+    int32_t uncompressed_page_size = 0;
+    int32_t compressed_page_size = 0;
     DataPageHeader data_page_header;
     DictionaryPageHeader dictionary_page_header;
     
@@ -476,6 +477,9 @@ struct PageHeader {
 #endif
 
 #ifdef TINYPARQUET_ENABLE_ZSTD
+#endif
+
+#ifdef TINYPARQUET_ENABLE_BROTLI
 #endif
 
 namespace decompress {
@@ -610,6 +614,19 @@ inline bool ZstdUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_
     return true;
 #else
     throw ParquetException("ZSTD decompression requires defining TINYPARQUET_ENABLE_ZSTD and linking zstd");
+#endif
+}
+
+inline bool BrotliUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+#ifdef TINYPARQUET_ENABLE_BROTLI
+    out.resize(uncompressed_len);
+    size_t decoded_size = uncompressed_len;
+    BrotliDecoderResult res = BrotliDecoderDecompress(in_size, in, &decoded_size, out.data());
+    if (res != BROTLI_DECODER_RESULT_SUCCESS) return false;
+    out.resize(decoded_size);
+    return true;
+#else
+    throw ParquetException("BROTLI decompression requires defining TINYPARQUET_ENABLE_BROTLI and linking brotli");
 #endif
 }
 
@@ -758,6 +775,10 @@ public:
         size_t header_size = decoder.GetBytesRead();
         ptr_ += header_size;
         
+        if (header.compressed_page_size < 0) {
+            return false;
+        }
+        
         page_data = ptr_;
         ptr_ += header.compressed_page_size;
         
@@ -785,6 +806,13 @@ public:
         uint64_t offset = chunk.meta_data.has_dictionary_page ? 
                           chunk.meta_data.dictionary_page_offset : 
                           chunk.meta_data.data_page_offset;
+        
+        if (offset == 0 && chunk.meta_data.has_dictionary_page) {
+            offset = chunk.meta_data.data_page_offset;
+        }
+        if (offset == 0) {
+            offset = chunk.file_offset;
+        }
         
         page_reader_ = std::make_unique<PageReader>(data_ + offset, data_ + size_);
     }
@@ -817,6 +845,9 @@ public:
                 page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
                 if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::BROTLI) {
+                if (!decompress::BrotliUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress BROTLI page");
                 page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");
@@ -855,12 +886,14 @@ public:
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
                     size_t rle_data_len = page_size - 4 - def_len - 1;
+                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
                             uint32_t index;
                             if (rle_data.Next(index)) {
+                                if (index >= dictionary.size()) throw ParquetException("Dictionary index out of bounds");
                                 out.push_back(dictionary[index]);
                             }
                         } else {
@@ -871,7 +904,9 @@ public:
                     }
                 } else {
                     // PLAIN encoded
-                    decoders::PlainDecoder plain(ptr, page_size - 4 - def_len);
+                    size_t plain_len = page_size - 4 - def_len;
+                    if (max_def_level_ == 0) plain_len = page_size;
+                    decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
                             int32_t val;
@@ -921,6 +956,9 @@ public:
             } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
                 if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
                 page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::BROTLI) {
+                if (!decompress::BrotliUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress BROTLI page");
+                page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");
             }
@@ -956,6 +994,7 @@ public:
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
                     size_t rle_data_len = page_size - 4 - def_len - 1;
+                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
@@ -1003,6 +1042,9 @@ public:
                 page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
                 if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::BROTLI) {
+                if (!decompress::BrotliUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress BROTLI page");
                 page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");

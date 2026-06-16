@@ -16,6 +16,13 @@ public:
                           chunk.meta_data.dictionary_page_offset : 
                           chunk.meta_data.data_page_offset;
         
+        if (offset == 0 && chunk.meta_data.has_dictionary_page) {
+            offset = chunk.meta_data.data_page_offset;
+        }
+        if (offset == 0) {
+            offset = chunk.file_offset;
+        }
+        
         page_reader_ = std::make_unique<PageReader>(data_ + offset, data_ + size_);
     }
 
@@ -88,12 +95,14 @@ public:
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
                     size_t rle_data_len = page_size - 4 - def_len - 1;
+                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
                             uint32_t index;
                             if (rle_data.Next(index)) {
+                                if (index >= dictionary.size()) throw ParquetException("Dictionary index out of bounds");
                                 out.push_back(dictionary[index]);
                             }
                         } else {
@@ -104,7 +113,9 @@ public:
                     }
                 } else {
                     // PLAIN encoded
-                    decoders::PlainDecoder plain(ptr, page_size - 4 - def_len);
+                    size_t plain_len = page_size - 4 - def_len;
+                    if (max_def_level_ == 0) plain_len = page_size;
+                    decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
                             int32_t val;
@@ -192,6 +203,7 @@ public:
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
                     size_t rle_data_len = page_size - 4 - def_len - 1;
+                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
