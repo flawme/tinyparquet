@@ -1,0 +1,6 @@
+[submodule "third_party/brotli"]
+	path = third_party/brotli
+	url = https://github.com/google/brotli.git
+[submodule "testing/parquet-testing"]
+	path = testing/parquet-testing
+	url = https://github.com/apache/parquet-testing.git
