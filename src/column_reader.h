@@ -48,6 +48,9 @@ public:
             } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
                 if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
                 page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::BROTLI) {
+                if (!decompress::BrotliUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress BROTLI page");
+                page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");
             }
@@ -151,6 +154,9 @@ public:
             } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
                 if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
                 page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::BROTLI) {
+                if (!decompress::BrotliUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress BROTLI page");
+                page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");
             }
@@ -233,6 +239,9 @@ public:
                 page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
                 if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::BROTLI) {
+                if (!decompress::BrotliUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress BROTLI page");
                 page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");

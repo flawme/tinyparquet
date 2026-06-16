@@ -21,7 +21,7 @@ Parquet files support many compression algorithms. `tinyparquet` implements seve
 - [x] **LZ4_RAW** (Native zero-dependency decompressor included)
 - [x] **GZIP** (via bundled `third_party/miniz`)
 - [x] **ZSTD** (via bundled `third_party/zstd`)
-- [ ] BROTLI (Planned)
+- [x] **BROTLI** (via bundled `third_party/brotli`)
 
 ### Data Encodings
 - [x] **PLAIN** (Raw values)
@@ -79,12 +79,13 @@ Since `tinyparquet` is a header-only library, no separate library compilation is
 g++ -std=c++17 main.cpp -o app
 ```
 
-If you wish to enable GZIP and ZSTD decompression, define the compiler flags and compile the provided `third_party` sources:
+If you wish to enable GZIP, ZSTD, and BROTLI decompression, define the compiler flags and compile the provided `third_party` sources:
 
 ```bash
 gcc -c third_party/miniz/miniz.c -o miniz.o
 gcc -c third_party/zstd/zstd.c -o zstd.o
-g++ -std=c++17 -Ithird_party/miniz -Ithird_party/zstd -DTINYPARQUET_ENABLE_GZIP -DTINYPARQUET_ENABLE_ZSTD main.cpp miniz.o zstd.o -o app
+gcc -c third_party/brotli/c/common/*.c third_party/brotli/c/dec/*.c
+g++ -std=c++17 -Ithird_party/miniz -Ithird_party/zstd -Ithird_party/brotli/c/include -DTINYPARQUET_ENABLE_GZIP -DTINYPARQUET_ENABLE_ZSTD -DTINYPARQUET_ENABLE_BROTLI main.cpp miniz.o zstd.o *.o -o app
 ```
 
 ## Development & Testing

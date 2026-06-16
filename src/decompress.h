@@ -10,6 +10,10 @@
 #include <zstd.h>
 #endif
 
+#ifdef TINYPARQUET_ENABLE_BROTLI
+#include <brotli/decode.h>
+#endif
+
 namespace tinyparquet {
 namespace decompress {
 
@@ -143,6 +147,19 @@ inline bool ZstdUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_
     return true;
 #else
     throw ParquetException("ZSTD decompression requires defining TINYPARQUET_ENABLE_ZSTD and linking zstd");
+#endif
+}
+
+inline bool BrotliUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+#ifdef TINYPARQUET_ENABLE_BROTLI
+    out.resize(uncompressed_len);
+    size_t decoded_size = uncompressed_len;
+    BrotliDecoderResult res = BrotliDecoderDecompress(in_size, in, &decoded_size, out.data());
+    if (res != BROTLI_DECODER_RESULT_SUCCESS) return false;
+    out.resize(decoded_size);
+    return true;
+#else
+    throw ParquetException("BROTLI decompression requires defining TINYPARQUET_ENABLE_BROTLI and linking brotli");
 #endif
 }
 
