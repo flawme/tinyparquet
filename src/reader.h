@@ -36,9 +36,15 @@ public:
 
     ColumnReader GetColumnReader(const std::string& name) const {
         if (metadata_.row_groups.empty()) throw ParquetException("No row groups");
+        int max_def_level = 1;
+        for (const auto& elem : metadata_.schema) {
+            if (elem.name == name && elem.repetition_type == 0) {
+                max_def_level = 0;
+            }
+        }
         for (const auto& chunk : metadata_.row_groups[0].columns) {
             if (!chunk.meta_data.path_in_schema.empty() && chunk.meta_data.path_in_schema[0] == name) {
-                return ColumnReader(chunk, mmap_.data(), mmap_.size());
+                return ColumnReader(chunk, mmap_.data(), mmap_.size(), max_def_level);
             }
         }
         throw ParquetException("Column not found");

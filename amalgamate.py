@@ -8,6 +8,7 @@ HEADERS = [
     "src/mmap.h",
     "src/thrift.h",
     "src/metadata.h",
+    "src/decompress.h",
     "src/decoders.h",
     "src/page_reader.h",
     "src/column_reader.h",

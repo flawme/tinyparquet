@@ -22,8 +22,7 @@ public:
         ptr_ += header.compressed_page_size;
         
         if (ptr_ > end_) {
-            std::cout << "Error: ptr_ (" << (void*)ptr_ << ") > end_ (" << (void*)end_ << ")\n";
-            throw ParquetException("Page data exceeds column chunk bounds");
+            return false;
         }
         
         return true;

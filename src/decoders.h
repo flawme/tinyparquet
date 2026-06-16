@@ -81,16 +81,16 @@ class PlainDecoder {
 public:
     PlainDecoder(const uint8_t* data, size_t size) : ptr_(data), end_(data + size) {}
 
-    bool ReadInt32(int32_t& val) {
+    bool ReadInt32(int32_t& out) {
         if (ptr_ + 4 > end_) return false;
-        std::memcpy(&val, ptr_, 4);
+        std::memcpy(&out, ptr_, 4);
         ptr_ += 4;
         return true;
     }
 
-    bool ReadInt64(int64_t& val) {
+    bool ReadInt64(int64_t& out) {
         if (ptr_ + 8 > end_) return false;
-        std::memcpy(&val, ptr_, 8);
+        std::memcpy(&out, ptr_, 8);
         ptr_ += 8;
         return true;
     }
@@ -102,6 +102,17 @@ public:
         return true;
     }
 
+    bool ReadByteArray(std::string& out) {
+        if (ptr_ + 4 > end_) return false;
+        uint32_t len = 0;
+        std::memcpy(&len, ptr_, 4);
+        ptr_ += 4;
+        if (ptr_ + len > end_) return false;
+        out.assign(reinterpret_cast<const char*>(ptr_), len);
+        ptr_ += len;
+        return true;
+    }
+
     bool ReadDouble(double& val) {
         if (ptr_ + 8 > end_) return false;
         std::memcpy(&val, ptr_, 8);
@@ -109,16 +120,7 @@ public:
         return true;
     }
 
-    bool ReadByteArray(std::string& val) {
-        if (ptr_ + 4 > end_) return false;
-        uint32_t len;
-        std::memcpy(&len, ptr_, 4);
-        ptr_ += 4;
-        if (ptr_ + len > end_) return false;
-        val.assign(reinterpret_cast<const char*>(ptr_), len);
-        ptr_ += len;
-        return true;
-    }
+
 
 private:
     const uint8_t* ptr_;

@@ -122,7 +122,6 @@ public:
                 break;
             }
             default:
-                std::cout << "Unknown Thrift type during skip: " << (int)type << "\n";
                 throw ParquetException("Unknown Thrift type during skip");
         }
     }

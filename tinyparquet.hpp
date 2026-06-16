@@ -1,5 +1,5 @@
 // TinyParquet - Single Header Parquet Reader
-// Generated on 2026-06-16 00:31:24
+// Generated on 2026-06-16 19:53:55
 
 #pragma once
 
@@ -194,7 +194,6 @@ public:
                 break;
             }
             default:
-                std::cout << "Unknown Thrift type during skip: " << (int)type << "\n";
                 throw ParquetException("Unknown Thrift type during skip");
         }
     }
@@ -469,6 +468,120 @@ struct PageHeader {
 };
 
 
+// --- src/decompress.h ---
+
+namespace decompress {
+
+inline bool SnappyUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out) {
+    const uint8_t* ptr = in;
+    const uint8_t* end = in + in_size;
+
+    uint32_t uncompressed_len = 0;
+    int shift = 0;
+    while (ptr < end) {
+        uint8_t b = *ptr++;
+        uncompressed_len |= (b & 0x7F) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+    }
+
+    out.clear();
+    out.reserve(uncompressed_len);
+
+    while (ptr < end) {
+        uint8_t tag = *ptr++;
+        int len, offset;
+
+        if ((tag & 0x3) == 0x0) {
+            len = (tag >> 2) + 1;
+            if (len > 60) {
+                int bytes = len - 60;
+                len = 0;
+                for (int i = 0; i < bytes; ++i) {
+                    if (ptr >= end) return false;
+                    len |= (*ptr++) << (8 * i);
+                }
+                len += 1;
+            }
+            if (ptr + len > end) return false;
+            out.insert(out.end(), ptr, ptr + len);
+            ptr += len;
+        } else if ((tag & 0x3) == 0x1) {
+            len = ((tag >> 2) & 0x7) + 4;
+            if (ptr >= end) return false;
+            offset = ((tag >> 5) << 8) | (*ptr++);
+            size_t out_size = out.size();
+            if (offset == 0 || offset > out_size) return false;
+            for (int i = 0; i < len; ++i) out.push_back(out[out.size() - offset]);
+        } else if ((tag & 0x3) == 0x2) {
+            len = (tag >> 2) + 1;
+            if (ptr + 2 > end) return false;
+            offset = ptr[0] | (ptr[1] << 8);
+            ptr += 2;
+            size_t out_size = out.size();
+            if (offset == 0 || offset > out_size) return false;
+            for (int i = 0; i < len; ++i) out.push_back(out[out.size() - offset]);
+        } else if ((tag & 0x3) == 0x3) {
+            len = (tag >> 2) + 1;
+            if (ptr + 4 > end) return false;
+            offset = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
+            ptr += 4;
+            size_t out_size = out.size();
+            if (offset == 0 || offset > out_size) return false;
+            for (int i = 0; i < len; ++i) out.push_back(out[out.size() - offset]);
+        }
+    }
+    return out.size() == uncompressed_len;
+}
+
+inline bool Lz4Uncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+    const uint8_t* ptr = in;
+    const uint8_t* end = in + in_size;
+    out.clear();
+    out.reserve(uncompressed_len);
+    
+    while (ptr < end) {
+        uint8_t token = *ptr++;
+        int literals_len = token >> 4;
+        if (literals_len == 15) {
+            uint8_t l;
+            do {
+                if (ptr >= end) return false;
+                l = *ptr++;
+                literals_len += l;
+            } while (l == 255);
+        }
+        
+        if (ptr + literals_len > end) return false;
+        out.insert(out.end(), ptr, ptr + literals_len);
+        ptr += literals_len;
+        
+        if (ptr == end) break;
+        
+        if (ptr + 2 > end) return false;
+        int offset = ptr[0] | (ptr[1] << 8);
+        ptr += 2;
+        if (offset == 0 || offset > out.size()) return false;
+        
+        int match_len = (token & 0x0f) + 4;
+        if (match_len == 15 + 4) {
+            uint8_t l;
+            do {
+                if (ptr >= end) return false;
+                l = *ptr++;
+                match_len += l;
+            } while (l == 255);
+        }
+        
+        for (int i = 0; i < match_len; ++i) {
+            out.push_back(out[out.size() - offset]);
+        }
+    }
+    return out.size() == uncompressed_len;
+}
+
+} // namespace decompress
+
 // --- src/decoders.h ---
 
 namespace decoders {
@@ -548,16 +661,16 @@ class PlainDecoder {
 public:
     PlainDecoder(const uint8_t* data, size_t size) : ptr_(data), end_(data + size) {}
 
-    bool ReadInt32(int32_t& val) {
+    bool ReadInt32(int32_t& out) {
         if (ptr_ + 4 > end_) return false;
-        std::memcpy(&val, ptr_, 4);
+        std::memcpy(&out, ptr_, 4);
         ptr_ += 4;
         return true;
     }
 
-    bool ReadInt64(int64_t& val) {
+    bool ReadInt64(int64_t& out) {
         if (ptr_ + 8 > end_) return false;
-        std::memcpy(&val, ptr_, 8);
+        std::memcpy(&out, ptr_, 8);
         ptr_ += 8;
         return true;
     }
@@ -569,6 +682,17 @@ public:
         return true;
     }
 
+    bool ReadByteArray(std::string& out) {
+        if (ptr_ + 4 > end_) return false;
+        uint32_t len = 0;
+        std::memcpy(&len, ptr_, 4);
+        ptr_ += 4;
+        if (ptr_ + len > end_) return false;
+        out.assign(reinterpret_cast<const char*>(ptr_), len);
+        ptr_ += len;
+        return true;
+    }
+
     bool ReadDouble(double& val) {
         if (ptr_ + 8 > end_) return false;
         std::memcpy(&val, ptr_, 8);
@@ -576,16 +700,7 @@ public:
         return true;
     }
 
-    bool ReadByteArray(std::string& val) {
-        if (ptr_ + 4 > end_) return false;
-        uint32_t len;
-        std::memcpy(&len, ptr_, 4);
-        ptr_ += 4;
-        if (ptr_ + len > end_) return false;
-        val.assign(reinterpret_cast<const char*>(ptr_), len);
-        ptr_ += len;
-        return true;
-    }
+
 
 private:
     const uint8_t* ptr_;
@@ -614,8 +729,7 @@ public:
         ptr_ += header.compressed_page_size;
         
         if (ptr_ > end_) {
-            std::cout << "Error: ptr_ (" << (void*)ptr_ << ") > end_ (" << (void*)end_ << ")\n";
-            throw ParquetException("Page data exceeds column chunk bounds");
+            return false;
         }
         
         return true;
@@ -632,8 +746,8 @@ private:
 
 class ColumnReader {
 public:
-    ColumnReader(const ColumnChunk& chunk, const uint8_t* file_data, size_t file_size) 
-        : chunk_(chunk), data_(file_data), size_(file_size) {
+    ColumnReader(const ColumnChunk& chunk, const uint8_t* file_data, size_t file_size, int max_def_level = 1) 
+        : chunk_(chunk), data_(file_data), size_(file_size), max_def_level_(max_def_level) {
         
         uint64_t offset = chunk.meta_data.has_dictionary_page ? 
                           chunk.meta_data.dictionary_page_offset : 
@@ -644,15 +758,33 @@ public:
 
     void ReadAllInt32(std::vector<int32_t>& out) {
         PageHeader header;
-        const uint8_t* page_data;
+        const uint8_t* raw_page_data;
         int64_t total_values_to_read = chunk_.meta_data.num_values;
         int64_t values_read = 0;
         
         std::vector<int32_t> dictionary;
+        std::vector<uint8_t> uncompressed_buffer;
         
-        while (values_read < total_values_to_read && page_reader_->NextPage(header, page_data)) {
+        while (values_read < total_values_to_read && page_reader_->NextPage(header, raw_page_data)) {
+            const uint8_t* page_data = raw_page_data;
+            size_t page_size = header.uncompressed_page_size;
+            
+            if (chunk_.meta_data.codec == CompressionCodec::SNAPPY) {
+                if (!decompress::SnappyUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer)) {
+                    throw ParquetException("Failed to uncompress Snappy page");
+                }
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::LZ4_RAW || chunk_.meta_data.codec == CompressionCodec::LZ4) {
+                if (!decompress::Lz4Uncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) {
+                    throw ParquetException("Failed to uncompress LZ4 page");
+                }
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
+                throw ParquetException("Unsupported compression codec");
+            }
+
             if (header.type == PageType::DICTIONARY_PAGE) {
-                decoders::PlainDecoder plain(page_data, header.compressed_page_size);
+                decoders::PlainDecoder plain(page_data, page_size);
                 for (int i = 0; i < header.dictionary_page_header.num_values; ++i) {
                     int32_t val;
                     if (plain.ReadInt32(val)) dictionary.push_back(val);
@@ -676,12 +808,8 @@ public:
                 ptr += def_len;
                 
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
-                    // Dictionary encoded data values
                     int bit_width = *ptr++;
-                    // The rest of the page is RLE encoded indices.
-                    // Wait, RLE data length is NOT prefixed in V1 data pages!
-                    // It just takes up the rest of the page.
-                    size_t rle_data_len = header.compressed_page_size - 4 - def_len - 1;
+                    size_t rle_data_len = page_size - 4 - def_len - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     
                     for (size_t i = 0; i < def_levels.size(); ++i) {
@@ -698,7 +826,7 @@ public:
                     }
                 } else {
                     // PLAIN encoded
-                    decoders::PlainDecoder plain(ptr, header.compressed_page_size - 4 - def_len);
+                    decoders::PlainDecoder plain(ptr, page_size - 4 - def_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
                             int32_t val;
@@ -717,10 +845,157 @@ public:
     }
 
 private:
-    ColumnChunk chunk_;
+    const ColumnChunk& chunk_;
     const uint8_t* data_;
     size_t size_;
+    int max_def_level_;
     std::unique_ptr<PageReader> page_reader_;
+public:
+    void ReadAllInt64(std::vector<int64_t>& out) {
+        PageHeader header;
+        const uint8_t* raw_page_data;
+        int64_t total_values_to_read = chunk_.meta_data.num_values;
+        int64_t values_read = 0;
+        
+        std::vector<int64_t> dictionary;
+        std::vector<uint8_t> uncompressed_buffer;
+        
+        while (values_read < total_values_to_read && page_reader_->NextPage(header, raw_page_data)) {
+            const uint8_t* page_data = raw_page_data;
+            size_t page_size = header.uncompressed_page_size;
+            
+            if (chunk_.meta_data.codec == CompressionCodec::SNAPPY) {
+                if (!decompress::SnappyUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer)) throw ParquetException("Failed to uncompress Snappy page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::LZ4_RAW || chunk_.meta_data.codec == CompressionCodec::LZ4) {
+                if (!decompress::Lz4Uncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress LZ4 page");
+                page_data = uncompressed_buffer.data();
+            }
+            
+            if (header.type == PageType::DICTIONARY_PAGE) {
+                decoders::PlainDecoder plain(page_data, page_size);
+                for (int i = 0; i < header.dictionary_page_header.num_values; ++i) {
+                    int64_t val;
+                    if (plain.ReadInt64(val)) dictionary.push_back(val);
+                }
+            } else if (header.type == PageType::DATA_PAGE) {
+                const uint8_t* ptr = page_data;
+                uint32_t def_len = 0;
+                std::memcpy(&def_len, ptr, 4);
+                ptr += 4;
+                
+                decoders::RleDecoder rle_def(ptr, def_len, 1);
+                std::vector<uint32_t> def_levels;
+                uint32_t def_val;
+                for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                    if (rle_def.Next(def_val)) def_levels.push_back(def_val);
+                    else break;
+                }
+                
+                ptr += def_len;
+                if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
+                    int bit_width = *ptr++;
+                    size_t rle_data_len = page_size - 4 - def_len - 1;
+                    decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            uint32_t index;
+                            if (rle_data.Next(index)) out.push_back(dictionary[index]);
+                        } else out.push_back(0);
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                } else {
+                    decoders::PlainDecoder plain(ptr, page_size - 4 - def_len);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            int64_t val;
+                            if (plain.ReadInt64(val)) out.push_back(val);
+                        } else out.push_back(0);
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                }
+            }
+        }
+    }
+    void ReadAllByteArray(std::vector<std::string>& out) {
+        PageHeader header;
+        const uint8_t* raw_page_data;
+        int64_t total_values_to_read = chunk_.meta_data.num_values;
+        int64_t values_read = 0;
+        
+        std::vector<std::string> dictionary;
+        std::vector<uint8_t> uncompressed_buffer;
+        
+        while (values_read < total_values_to_read && page_reader_->NextPage(header, raw_page_data)) {
+            const uint8_t* page_data = raw_page_data;
+            size_t page_size = header.uncompressed_page_size;
+            
+            if (chunk_.meta_data.codec == CompressionCodec::SNAPPY) {
+                if (!decompress::SnappyUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer)) throw ParquetException("Failed to uncompress Snappy page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::LZ4_RAW || chunk_.meta_data.codec == CompressionCodec::LZ4) {
+                if (!decompress::Lz4Uncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress LZ4 page");
+                page_data = uncompressed_buffer.data();
+            }
+            
+            if (header.type == PageType::DICTIONARY_PAGE) {
+                decoders::PlainDecoder plain(page_data, page_size);
+                for (int i = 0; i < header.dictionary_page_header.num_values; ++i) {
+                    std::string val;
+                    if (plain.ReadByteArray(val)) dictionary.push_back(val);
+                }
+            } else if (header.type == PageType::DATA_PAGE) {
+                const uint8_t* ptr = page_data;
+                uint32_t def_len = 0;
+                std::vector<uint32_t> def_levels;
+                
+                if (max_def_level_ > 0) {
+                    std::memcpy(&def_len, ptr, 4);
+                    ptr += 4;
+                    decoders::RleDecoder rle_def(ptr, def_len, 1);
+                    uint32_t def_val;
+                    for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                        if (rle_def.Next(def_val)) def_levels.push_back(def_val);
+                        else break;
+                    }
+                    ptr += def_len;
+                } else {
+                    for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                        def_levels.push_back(1);
+                    }
+                }
+                
+                if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
+                    int bit_width = *ptr++;
+                    size_t rle_data_len = page_size - 4 - def_len - 1;
+                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            uint32_t index;
+                            if (rle_data.Next(index)) out.push_back(dictionary[index]);
+                        } else out.push_back("");
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                } else {
+                    size_t plain_len = page_size - 4 - def_len;
+                    if (max_def_level_ == 0) plain_len = page_size;
+                    decoders::PlainDecoder plain(ptr, plain_len);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            std::string val;
+                            if (plain.ReadByteArray(val)) out.push_back(val);
+                        } else out.push_back("");
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                }
+            }
+        }
+    }
 };
 
 
@@ -757,9 +1032,15 @@ public:
 
     ColumnReader GetColumnReader(const std::string& name) const {
         if (metadata_.row_groups.empty()) throw ParquetException("No row groups");
+        int max_def_level = 1;
+        for (const auto& elem : metadata_.schema) {
+            if (elem.name == name && elem.repetition_type == 0) {
+                max_def_level = 0;
+            }
+        }
         for (const auto& chunk : metadata_.row_groups[0].columns) {
             if (!chunk.meta_data.path_in_schema.empty() && chunk.meta_data.path_in_schema[0] == name) {
-                return ColumnReader(chunk, mmap_.data(), mmap_.size());
+                return ColumnReader(chunk, mmap_.data(), mmap_.size(), max_def_level);
             }
         }
         throw ParquetException("Column not found");
