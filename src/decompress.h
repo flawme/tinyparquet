@@ -2,6 +2,14 @@
 #include "common.h"
 #include <vector>
 
+#ifdef TINYPARQUET_ENABLE_GZIP
+#include <miniz.h>
+#endif
+
+#ifdef TINYPARQUET_ENABLE_ZSTD
+#include <zstd.h>
+#endif
+
 namespace tinyparquet {
 namespace decompress {
 
@@ -111,6 +119,31 @@ inline bool Lz4Uncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t
         }
     }
     return out.size() == uncompressed_len;
+}
+
+inline bool GzipUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+#ifdef TINYPARQUET_ENABLE_GZIP
+    out.resize(uncompressed_len);
+    unsigned long dest_len = uncompressed_len;
+    int res = mz_uncompress(out.data(), &dest_len, in, in_size);
+    if (res != 0 /* MZ_OK */) return false;
+    out.resize(dest_len);
+    return true;
+#else
+    throw ParquetException("GZIP decompression requires defining TINYPARQUET_ENABLE_GZIP and linking miniz");
+#endif
+}
+
+inline bool ZstdUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+#ifdef TINYPARQUET_ENABLE_ZSTD
+    out.resize(uncompressed_len);
+    size_t const res = ZSTD_decompress(out.data(), uncompressed_len, in, in_size);
+    if (ZSTD_isError(res)) return false;
+    out.resize(res);
+    return true;
+#else
+    throw ParquetException("ZSTD decompression requires defining TINYPARQUET_ENABLE_ZSTD and linking zstd");
+#endif
 }
 
 } // namespace decompress

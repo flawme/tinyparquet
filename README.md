@@ -19,8 +19,8 @@ Parquet files support many compression algorithms. `tinyparquet` implements seve
 - [x] **UNCOMPRESSED**
 - [x] **SNAPPY** (Native zero-dependency decompressor included)
 - [x] **LZ4_RAW** (Native zero-dependency decompressor included)
-- [ ] GZIP (Planned)
-- [ ] ZSTD (Planned)
+- [x] **GZIP** (via bundled `third_party/miniz`)
+- [x] **ZSTD** (via bundled `third_party/zstd`)
 - [ ] BROTLI (Planned)
 
 ### Data Encodings
@@ -77,6 +77,14 @@ Since `tinyparquet` is a header-only library, no separate library compilation is
 
 ```bash
 g++ -std=c++17 main.cpp -o app
+```
+
+If you wish to enable GZIP and ZSTD decompression, define the compiler flags and compile the provided `third_party` sources:
+
+```bash
+gcc -c third_party/miniz/miniz.c -o miniz.o
+gcc -c third_party/zstd/zstd.c -o zstd.o
+g++ -std=c++17 -Ithird_party/miniz -Ithird_party/zstd -DTINYPARQUET_ENABLE_GZIP -DTINYPARQUET_ENABLE_ZSTD main.cpp miniz.o zstd.o -o app
 ```
 
 ## Development & Testing

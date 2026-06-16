@@ -1,5 +1,5 @@
 // TinyParquet - Single Header Parquet Reader
-// Generated on 2026-06-16 19:53:55
+// Generated on 2026-06-16 20:05:07
 
 #pragma once
 
@@ -7,12 +7,14 @@
 #include <cstring>
 #include <fcntl.h>
 #include <memory>
+#include <miniz.h>
 #include <stdexcept>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
+#include <zstd.h>
 
 namespace tinyparquet {
 
@@ -470,6 +472,12 @@ struct PageHeader {
 
 // --- src/decompress.h ---
 
+#ifdef TINYPARQUET_ENABLE_GZIP
+#endif
+
+#ifdef TINYPARQUET_ENABLE_ZSTD
+#endif
+
 namespace decompress {
 
 inline bool SnappyUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out) {
@@ -578,6 +586,31 @@ inline bool Lz4Uncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t
         }
     }
     return out.size() == uncompressed_len;
+}
+
+inline bool GzipUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+#ifdef TINYPARQUET_ENABLE_GZIP
+    out.resize(uncompressed_len);
+    unsigned long dest_len = uncompressed_len;
+    int res = mz_uncompress(out.data(), &dest_len, in, in_size);
+    if (res != 0 /* MZ_OK */) return false;
+    out.resize(dest_len);
+    return true;
+#else
+    throw ParquetException("GZIP decompression requires defining TINYPARQUET_ENABLE_GZIP and linking miniz");
+#endif
+}
+
+inline bool ZstdUncompress(const uint8_t* in, size_t in_size, std::vector<uint8_t>& out, size_t uncompressed_len) {
+#ifdef TINYPARQUET_ENABLE_ZSTD
+    out.resize(uncompressed_len);
+    size_t const res = ZSTD_decompress(out.data(), uncompressed_len, in, in_size);
+    if (ZSTD_isError(res)) return false;
+    out.resize(res);
+    return true;
+#else
+    throw ParquetException("ZSTD decompression requires defining TINYPARQUET_ENABLE_ZSTD and linking zstd");
+#endif
 }
 
 } // namespace decompress
@@ -779,6 +812,12 @@ public:
                     throw ParquetException("Failed to uncompress LZ4 page");
                 }
                 page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::GZIP) {
+                if (!decompress::GzipUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress GZIP page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
+                if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
+                page_data = uncompressed_buffer.data();
             } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
                 throw ParquetException("Unsupported compression codec");
             }
@@ -870,6 +909,14 @@ public:
             } else if (chunk_.meta_data.codec == CompressionCodec::LZ4_RAW || chunk_.meta_data.codec == CompressionCodec::LZ4) {
                 if (!decompress::Lz4Uncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress LZ4 page");
                 page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::GZIP) {
+                if (!decompress::GzipUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress GZIP page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
+                if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
+                throw ParquetException("Unsupported compression codec");
             }
             
             if (header.type == PageType::DICTIONARY_PAGE) {
@@ -938,6 +985,14 @@ public:
             } else if (chunk_.meta_data.codec == CompressionCodec::LZ4_RAW || chunk_.meta_data.codec == CompressionCodec::LZ4) {
                 if (!decompress::Lz4Uncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress LZ4 page");
                 page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::GZIP) {
+                if (!decompress::GzipUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress GZIP page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec == CompressionCodec::ZSTD) {
+                if (!decompress::ZstdUncompress(raw_page_data, header.compressed_page_size, uncompressed_buffer, header.uncompressed_page_size)) throw ParquetException("Failed to uncompress ZSTD page");
+                page_data = uncompressed_buffer.data();
+            } else if (chunk_.meta_data.codec != CompressionCodec::UNCOMPRESSED) {
+                throw ParquetException("Unsupported compression codec");
             }
             
             if (header.type == PageType::DICTIONARY_PAGE) {
