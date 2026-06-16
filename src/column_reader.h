@@ -61,20 +61,26 @@ public:
             }
             else if (header.type == PageType::DATA_PAGE) {
                 const uint8_t* ptr = page_data;
-                
                 uint32_t def_len = 0;
-                std::memcpy(&def_len, ptr, 4);
-                ptr += 4;
-                
-                decoders::RleDecoder rle_def(ptr, def_len, 1);
                 std::vector<uint32_t> def_levels;
-                uint32_t def_val;
-                for (int i = 0; i < header.data_page_header.num_values; ++i) {
-                    if (rle_def.Next(def_val)) def_levels.push_back(def_val);
-                    else break;
-                }
                 
-                ptr += def_len;
+                if (page_size == 0) continue;
+
+                if (max_def_level_ > 0) {
+                    std::memcpy(&def_len, ptr, 4);
+                    ptr += 4;
+                    decoders::RleDecoder rle_def(ptr, def_len, 1);
+                    uint32_t def_val;
+                    for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                        if (rle_def.Next(def_val)) def_levels.push_back(def_val);
+                        else break;
+                    }
+                    ptr += def_len;
+                } else {
+                    for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                        def_levels.push_back(1);
+                    }
+                }
                 
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
@@ -158,18 +164,25 @@ public:
             } else if (header.type == PageType::DATA_PAGE) {
                 const uint8_t* ptr = page_data;
                 uint32_t def_len = 0;
-                std::memcpy(&def_len, ptr, 4);
-                ptr += 4;
-                
-                decoders::RleDecoder rle_def(ptr, def_len, 1);
                 std::vector<uint32_t> def_levels;
-                uint32_t def_val;
-                for (int i = 0; i < header.data_page_header.num_values; ++i) {
-                    if (rle_def.Next(def_val)) def_levels.push_back(def_val);
-                    else break;
-                }
                 
-                ptr += def_len;
+                if (page_size == 0) continue;
+
+                if (max_def_level_ > 0) {
+                    std::memcpy(&def_len, ptr, 4);
+                    ptr += 4;
+                    decoders::RleDecoder rle_def(ptr, def_len, 1);
+                    uint32_t def_val;
+                    for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                        if (rle_def.Next(def_val)) def_levels.push_back(def_val);
+                        else break;
+                    }
+                    ptr += def_len;
+                } else {
+                    for (int i = 0; i < header.data_page_header.num_values; ++i) {
+                        def_levels.push_back(1);
+                    }
+                }
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
                     size_t rle_data_len = page_size - 4 - def_len - 1;
@@ -235,6 +248,8 @@ public:
                 const uint8_t* ptr = page_data;
                 uint32_t def_len = 0;
                 std::vector<uint32_t> def_levels;
+                
+                if (page_size == 0) continue;
                 
                 if (max_def_level_ > 0) {
                     std::memcpy(&def_len, ptr, 4);
