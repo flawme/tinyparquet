@@ -1,0 +1,27 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Executables
+test_reader
+test_runner
+test_runner_g
+test_delta
+test_files
+test_all
+
+# Scratch scripts
+*.py
+!amalgamate.py
+
+# Output logs
+*.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
