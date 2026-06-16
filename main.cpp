@@ -4,7 +4,7 @@
 
 int main() {
     try {
-        tinyparquet::Reader reader("lz4_raw_compressed_larger.parquet");
+        tinyparquet::Reader reader("testing/lz4_raw_compressed_larger.parquet");
         auto metadata = reader.GetMetaData();
         std::cout << "Parquet file metadata parsed successfully!\n";
         std::cout << "Number of rows: " << metadata.num_rows << "\n";

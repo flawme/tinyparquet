@@ -1,19 +1,41 @@
 # tinyparquet
 
-Version: v0.1.0-beta
+**Version:** v0.1.0-beta
 
-A zero-dependency, header-only C++17 Parquet reader. Designed to memory-map and decode uncompressed Parquet files directly into memory without requiring the Apache Thrift compiler, Apache Arrow, or any external compression libraries.
+A zero-dependency, header-only C++17 Parquet reader. Designed to memory-map and decode highly-compressed Parquet files directly into memory without requiring the Apache Thrift compiler, Apache Arrow, Boost, zlib, Snappy, or any external compression libraries.
 
-## Status
+## The Parquet Challenge
+Parquet is an incredibly complex columnar data format built for big data ecosystems. It requires navigating three primary layers of complexity:
+1. **Metadata Serialization:** Parquet schemas and structural metadata are written at the end of the file using Apache Thrift's `TCompactProtocol`.
+2. **Data Page Compression:** Column chunks are broken down into pages that are usually compressed using algorithms like Snappy, GZIP, LZ4, or Zstandard.
+3. **Values Encoding:** The actual scalar values are tightly packed using Dictionary Encoding, Run-Length Encoding (RLE), Bit-Packing, or Delta Encoding.
 
-Extensive testing is still required. This is a beta release supporting a subset of the Parquet specification.
+**`tinyparquet` implements a native decoder for all three of these layers without a single external dependency.**
 
-## Features
+## Supported Formats
+
+### Compression Codecs
+Parquet files support many compression algorithms. `tinyparquet` implements several of these natively in C++ header-only form:
+- [x] **UNCOMPRESSED**
+- [x] **SNAPPY** (Native zero-dependency decompressor included)
+- [x] **LZ4_RAW** (Native zero-dependency decompressor included)
+- [ ] GZIP (Planned)
+- [ ] ZSTD (Planned)
+- [ ] BROTLI (Planned)
+
+### Data Encodings
+- [x] **PLAIN** (Raw values)
+- [x] **PLAIN_DICTIONARY** (V1 Dictionary Pages)
+- [x] **RLE_DICTIONARY** (V2 Dictionary Encoding)
+- [x] **RLE / BIT_PACKED** (For Definition / Repetition levels)
+- [ ] DELTA_BINARY_PACKED (Planned)
+- [ ] DELTA_BYTE_ARRAY (Planned)
+
+## Architecture
 - **Header-Only:** Drop `tinyparquet.hpp` into your project.
-- **Zero-Dependency:** No external libraries required (no Thrift, Arrow, Boost, zlib, Snappy, etc.).
-- **Zero-Copy Architecture:** Uses POSIX `mmap` to read binary data at RAM speed.
-- **Custom Thrift Decoder:** Implements a lightweight `TCompactProtocol` decoder to parse Parquet metadata (FileMetaData, Schema, RowGroups, PageHeaders).
-- **Data Decoding:** Supports reading uncompressed `PLAIN`, `RLE`, and `PLAIN_DICTIONARY` encoded pages.
+- **Zero-Dependency:** No external libraries required. The custom `decompress.h` implements Snappy and LZ4 from scratch.
+- **Zero-Copy Architecture:** Uses POSIX `mmap` to read binary data at RAM speed without buffering entire files into memory.
+- **Custom Thrift Decoder:** Implements a lightweight `TCompactProtocol` decoder to parse Parquet FileMetaData without compiling Thrift structs.
 
 ## Usage
 
@@ -27,7 +49,7 @@ Include the single header file in your C++ project:
 int main() {
     try {
         // Initialize the reader
-        tinyparquet::Reader reader("data.parquet");
+        tinyparquet::Reader reader("testing/alltypes_plain.snappy.parquet");
         auto metadata = reader.GetMetaData();
         
         std::cout << "Rows: " << metadata.num_rows << "\n";
@@ -57,14 +79,11 @@ Since `tinyparquet` is a header-only library, no separate library compilation is
 g++ -std=c++17 main.cpp -o app
 ```
 
-## Limitations
-- Compressed data pages (Snappy, GZIP, LZ4, ZSTD) are intentionally unsupported to maintain the zero-dependency requirement.
-- Nested structures (Lists, Maps) require further implementation.
-- This version targets flat uncompressed files utilizing dictionary or plain encoding.
+## Development & Testing
 
-## Build the Header
+Test files are located in the `testing/` directory. These are scraped from the official `apache/parquet-testing` repository to ensure compliance with the spec.
 
-To regenerate `tinyparquet.hpp` from the source directory:
+To regenerate `tinyparquet.hpp` from the `src/` directory after making changes:
 ```bash
 python3 amalgamate.py
 ```
