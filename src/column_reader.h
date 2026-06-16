@@ -111,6 +111,16 @@ public:
                         values_read++;
                         if (values_read >= total_values_to_read) break;
                     }
+                } else if (header.data_page_header.encoding == 5) {
+                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, page_size - 4 - def_len);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            int32_t val;
+                            if (delta_data.Next(val)) out.push_back(val);
+                        } else out.push_back(0);
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
                 } else {
                     // PLAIN encoded
                     size_t plain_len = page_size - 4 - def_len;
@@ -297,6 +307,16 @@ public:
                         if (def_levels[i] == 1) {
                             uint32_t index;
                             if (rle_data.Next(index)) out.push_back(dictionary[index]);
+                        } else out.push_back("");
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
+                } else if (header.data_page_header.encoding == 7) {
+                    decoders::DeltaByteArrayDecoder delta_data(ptr, page_size - 4 - def_len);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            std::string val;
+                            if (delta_data.Next(val)) out.push_back(val);
                         } else out.push_back("");
                         values_read++;
                         if (values_read >= total_values_to_read) break;

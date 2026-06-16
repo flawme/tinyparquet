@@ -25,11 +25,10 @@ Parquet files support many compression algorithms. `tinyparquet` implements seve
 
 ### Data Encodings
 - [x] **PLAIN** (Raw values)
-- [x] **PLAIN_DICTIONARY** (V1 Dictionary Pages)
-- [x] **RLE_DICTIONARY** (V2 Dictionary Encoding)
-- [x] **RLE / BIT_PACKED** (For Definition / Repetition levels)
-- [ ] DELTA_BINARY_PACKED (Planned)
-- [ ] DELTA_BYTE_ARRAY (Planned)
+- [x] **PLAIN_DICTIONARY** / **RLE_DICTIONARY**
+- [x] **RLE** (Definition & Repetition Levels)
+- [x] **DELTA_BINARY_PACKED** (Integers)
+- [x] **DELTA_BYTE_ARRAY** (Strings)
 
 ## Architecture
 - **Header-Only:** Drop `tinyparquet.hpp` into your project.
