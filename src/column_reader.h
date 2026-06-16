@@ -306,7 +306,10 @@ public:
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             uint32_t index;
-                            if (rle_data.Next(index)) out.push_back(dictionary[index]);
+                            if (rle_data.Next(index)) {
+                                if (index >= dictionary.size()) throw ParquetException("Dictionary index out of bounds");
+                                out.push_back(dictionary[index]);
+                            }
                         } else out.push_back("");
                         values_read++;
                         if (values_read >= total_values_to_read) break;

@@ -172,7 +172,7 @@ public:
         int32_t prefix_len = prefix_lengths_[current_idx_];
         int32_t suffix_len = suffix_lengths_[current_idx_];
         
-        if (ptr_ + suffix_len > end_) throw ParquetException("DeltaByteArray suffix reading out of bounds");
+        if (suffix_len < 0 || suffix_len > static_cast<int64_t>(end_ - ptr_)) throw ParquetException("DeltaByteArray suffix reading out of bounds");
         
         std::string suffix(reinterpret_cast<const char*>(ptr_), suffix_len);
         ptr_ += suffix_len;

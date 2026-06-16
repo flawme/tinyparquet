@@ -107,7 +107,7 @@ public:
         uint32_t len = 0;
         std::memcpy(&len, ptr_, 4);
         ptr_ += 4;
-        if (ptr_ + len > end_) return false;
+        if (len > static_cast<size_t>(end_ - ptr_)) return false;
         out.assign(reinterpret_cast<const char*>(ptr_), len);
         ptr_ += len;
         return true;
