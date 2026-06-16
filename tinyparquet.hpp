@@ -1,5 +1,5 @@
 // TinyParquet - Single Header Parquet Reader
-// Generated on 2026-06-16 20:45:23
+// Generated on 2026-06-16 21:04:45
 
 #pragma once
 
@@ -478,8 +478,8 @@ namespace decoders {
 
 class DeltaBinaryPackedDecoder {
 public:
-    DeltaBinaryPackedDecoder(const uint8_t* data, size_t size) 
-        : ptr_(data), end_(data + size) {
+    DeltaBinaryPackedDecoder(const uint8_t* data, size_t size, uint32_t max_values = 0xFFFFFFFF) 
+        : ptr_(data), end_(data + size), max_values_(max_values) {
         if (size > 0) ReadHeader();
     }
 
@@ -491,6 +491,7 @@ public:
             result |= (static_cast<uint64_t>(byte & 0x7F) << shift);
             if ((byte & 0x80) == 0) return result;
             shift += 7;
+            if (shift >= 64) throw ParquetException("ULEB128 shift overflow");
         }
         throw ParquetException("Invalid ULEB128 in DeltaBinaryPacked");
     }
@@ -504,6 +505,7 @@ public:
         block_size_ = ReadUleb128();
         miniblocks_in_block_ = ReadUleb128();
         total_value_count_ = ReadUleb128();
+        if (total_value_count_ > max_values_) total_value_count_ = max_values_;
         last_value_ = ReadZigZag();
         
         values_read_ = 0;
@@ -529,6 +531,7 @@ public:
 
     uint64_t ReadBits(int bit_width) {
         if (bit_width == 0) return 0;
+        if (bit_width > 64) throw ParquetException("Bit width > 64 unsupported");
         uint64_t result = 0;
         int bits_read = 0;
         
@@ -586,6 +589,7 @@ public:
 private:
     const uint8_t* ptr_;
     const uint8_t* end_;
+    uint32_t max_values_;
     
     uint32_t block_size_ = 0;
     uint32_t miniblocks_in_block_ = 0;
@@ -607,16 +611,10 @@ private:
 
 class DeltaByteArrayDecoder {
 public:
-    DeltaByteArrayDecoder(const uint8_t* data, size_t size) 
+    DeltaByteArrayDecoder(const uint8_t* data, size_t size, uint32_t num_values) 
         : ptr_(data), end_(data + size) {
         
-        // The format is:
-        // 1. DeltaBinaryPacked prefix lengths
-        // 2. DeltaBinaryPacked suffix lengths
-        // 3. Raw suffix bytes
-        
-        // But the DeltaBinaryPackedDecoder advances ptr_, so we decode all lengths first.
-        DeltaBinaryPackedDecoder prefix_decoder(ptr_, end_ - ptr_);
+        DeltaBinaryPackedDecoder prefix_decoder(ptr_, end_ - ptr_, num_values);
         int32_t prefix_len;
         while (prefix_decoder.Next(prefix_len)) {
             prefix_lengths_.push_back(prefix_len);
@@ -624,7 +622,7 @@ public:
         
         ptr_ = prefix_decoder.GetPtr();
         
-        DeltaBinaryPackedDecoder suffix_decoder(ptr_, end_ - ptr_);
+        DeltaBinaryPackedDecoder suffix_decoder(ptr_, end_ - ptr_, num_values);
         int32_t suffix_len;
         while (suffix_decoder.Next(suffix_len)) {
             suffix_lengths_.push_back(suffix_len);
@@ -640,14 +638,17 @@ public:
         int32_t prefix_len = prefix_lengths_[current_idx_];
         int32_t suffix_len = suffix_lengths_[current_idx_];
         
-        if (ptr_ + suffix_len > end_) throw ParquetException("DeltaByteArray suffix reading out of bounds");
+        if (prefix_len < 0 || suffix_len < 0) throw ParquetException("Negative string length in DeltaByteArray");
+        if (suffix_len > static_cast<int64_t>(end_ - ptr_)) throw ParquetException("DeltaByteArray suffix reading out of bounds");
         
         std::string suffix(reinterpret_cast<const char*>(ptr_), suffix_len);
         ptr_ += suffix_len;
         
         std::string result;
-        if (prefix_len > 0 && prefix_len <= last_val_.size()) {
+        if (prefix_len > 0 && static_cast<size_t>(prefix_len) <= last_val_.size()) {
             result = last_val_.substr(0, prefix_len) + suffix;
+        } else if (prefix_len > 0) {
+             throw ParquetException("DeltaByteArray prefix length exceeds previous string");
         } else {
             result = suffix;
         }
@@ -936,7 +937,7 @@ public:
         uint32_t len = 0;
         std::memcpy(&len, ptr_, 4);
         ptr_ += 4;
-        if (ptr_ + len > end_) return false;
+        if (len > static_cast<size_t>(end_ - ptr_)) return false;
         out.assign(reinterpret_cast<const char*>(ptr_), len);
         ptr_ += len;
         return true;
@@ -1084,8 +1085,7 @@ public:
                 
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
-                    size_t rle_data_len = page_size - 4 - def_len - 1;
-                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    size_t rle_data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0) - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     
                     for (size_t i = 0; i < def_levels.size(); ++i) {
@@ -1102,7 +1102,8 @@ public:
                         if (values_read >= total_values_to_read) break;
                     }
                 } else if (header.data_page_header.encoding == 5) {
-                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, page_size - 4 - def_len);
+                    size_t data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, data_len, header.data_page_header.num_values);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             int32_t val;
@@ -1113,8 +1114,7 @@ public:
                     }
                 } else {
                     // PLAIN encoded
-                    size_t plain_len = page_size - 4 - def_len;
-                    if (max_def_level_ == 0) plain_len = page_size;
+                    size_t plain_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
                     decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
@@ -1202,8 +1202,7 @@ public:
                 }
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
-                    size_t rle_data_len = page_size - 4 - def_len - 1;
-                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    size_t rle_data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0) - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
@@ -1213,8 +1212,20 @@ public:
                         values_read++;
                         if (values_read >= total_values_to_read) break;
                     }
+                } else if (header.data_page_header.encoding == 5) {
+                    size_t data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, data_len, header.data_page_header.num_values);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            int64_t val;
+                            if (delta_data.Next(val)) out.push_back(val);
+                        } else out.push_back(0);
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
                 } else {
-                    decoders::PlainDecoder plain(ptr, page_size - 4 - def_len);
+                    size_t plain_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             int64_t val;
@@ -1290,19 +1301,22 @@ public:
                 
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
-                    size_t rle_data_len = page_size - 4 - def_len - 1;
-                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    size_t rle_data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0) - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             uint32_t index;
-                            if (rle_data.Next(index)) out.push_back(dictionary[index]);
+                            if (rle_data.Next(index)) {
+                                if (index >= dictionary.size()) throw ParquetException("Dictionary index out of bounds");
+                                out.push_back(dictionary[index]);
+                            }
                         } else out.push_back("");
                         values_read++;
                         if (values_read >= total_values_to_read) break;
                     }
                 } else if (header.data_page_header.encoding == 7) {
-                    decoders::DeltaByteArrayDecoder delta_data(ptr, page_size - 4 - def_len);
+                    size_t data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::DeltaByteArrayDecoder delta_data(ptr, data_len, header.data_page_header.num_values);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             std::string val;
@@ -1312,8 +1326,7 @@ public:
                         if (values_read >= total_values_to_read) break;
                     }
                 } else {
-                    size_t plain_len = page_size - 4 - def_len;
-                    if (max_def_level_ == 0) plain_len = page_size;
+                    size_t plain_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
                     decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {

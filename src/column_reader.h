@@ -94,8 +94,7 @@ public:
                 
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
-                    size_t rle_data_len = page_size - 4 - def_len - 1;
-                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    size_t rle_data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0) - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     
                     for (size_t i = 0; i < def_levels.size(); ++i) {
@@ -112,7 +111,8 @@ public:
                         if (values_read >= total_values_to_read) break;
                     }
                 } else if (header.data_page_header.encoding == 5) {
-                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, page_size - 4 - def_len);
+                    size_t data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, data_len, header.data_page_header.num_values);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             int32_t val;
@@ -123,8 +123,7 @@ public:
                     }
                 } else {
                     // PLAIN encoded
-                    size_t plain_len = page_size - 4 - def_len;
-                    if (max_def_level_ == 0) plain_len = page_size;
+                    size_t plain_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
                     decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) { // not null
@@ -212,8 +211,7 @@ public:
                 }
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
-                    size_t rle_data_len = page_size - 4 - def_len - 1;
-                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    size_t rle_data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0) - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
@@ -223,8 +221,20 @@ public:
                         values_read++;
                         if (values_read >= total_values_to_read) break;
                     }
+                } else if (header.data_page_header.encoding == 5) {
+                    size_t data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::DeltaBinaryPackedDecoder delta_data(ptr, data_len, header.data_page_header.num_values);
+                    for (size_t i = 0; i < def_levels.size(); ++i) {
+                        if (def_levels[i] == 1) {
+                            int64_t val;
+                            if (delta_data.Next(val)) out.push_back(val);
+                        } else out.push_back(0);
+                        values_read++;
+                        if (values_read >= total_values_to_read) break;
+                    }
                 } else {
-                    decoders::PlainDecoder plain(ptr, page_size - 4 - def_len);
+                    size_t plain_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             int64_t val;
@@ -300,8 +310,7 @@ public:
                 
                 if (header.data_page_header.encoding == 2 || header.data_page_header.encoding == 8) {
                     int bit_width = *ptr++;
-                    size_t rle_data_len = page_size - 4 - def_len - 1;
-                    if (max_def_level_ == 0) rle_data_len = page_size - 1;
+                    size_t rle_data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0) - 1;
                     decoders::RleDecoder rle_data(ptr, rle_data_len, bit_width);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
@@ -315,7 +324,8 @@ public:
                         if (values_read >= total_values_to_read) break;
                     }
                 } else if (header.data_page_header.encoding == 7) {
-                    decoders::DeltaByteArrayDecoder delta_data(ptr, page_size - 4 - def_len);
+                    size_t data_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
+                    decoders::DeltaByteArrayDecoder delta_data(ptr, data_len, header.data_page_header.num_values);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {
                             std::string val;
@@ -325,8 +335,7 @@ public:
                         if (values_read >= total_values_to_read) break;
                     }
                 } else {
-                    size_t plain_len = page_size - 4 - def_len;
-                    if (max_def_level_ == 0) plain_len = page_size;
+                    size_t plain_len = page_size - (max_def_level_ > 0 ? 4 + def_len : 0);
                     decoders::PlainDecoder plain(ptr, plain_len);
                     for (size_t i = 0; i < def_levels.size(); ++i) {
                         if (def_levels[i] == 1) {

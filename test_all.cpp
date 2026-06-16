@@ -12,6 +12,7 @@ void test_file(const std::string& filename) {
         
         for (size_t i = 1; i < metadata.schema.size(); ++i) {
             const auto& elem = metadata.schema[i];
+            if (elem.num_children > 0) continue;
             std::string col_name = elem.name;
             try {
                 auto col_reader = reader.GetColumnReader(col_name);
